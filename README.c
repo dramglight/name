@@ -32,6 +32,67 @@ char pkt_message[512] = {0, };
 char pkt_buffer[512] = {0, };
 int pkt_port = 0;
 
+void *sender_thread(void *arg) {
+    int client_socket;
+    struct sockaddr_in server_addr;
+    
+    // Create a UDP socket
+    if ((client_socket = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+        perror("socket");
+        exit(1);
+    }
+    
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(pkt_port);
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    
+    // Send the UDP packet
+    sendto(client_socket, pkt_message, 512, 0, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    
+    close(client_socket);
+    return NULL;
+}
+
+void *receiver_thread(void *arg) {
+    int server_socket;
+    struct sockaddr_in server_addr, client_addr;
+    
+    // Create a UDP socket
+    if ((server_socket = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+        perror("socket");
+        exit(1);
+    }
+    
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(pkt_port);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    
+    // Bind the socket to the server address
+    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
+        perror("bind");
+        exit(1);
+    }
+    
+    socklen_t client_addr_len = sizeof(client_addr);
+    
+    // Receive the UDP packet
+    recvfrom(server_socket, pkt_buffer, 512, 0, (struct sockaddr *)&client_addr, &client_addr_len);
+    
+    close(server_socket);
+    return NULL;
+}
+
+void write_to_file(const char *which, const char *format, ...) {
+  FILE * fu = fopen(which, "w");
+  va_list args;
+  va_start(args, format);
+  if (vfprintf(fu, format, args) < 0) {
+    perror("cannot write");
+    exit(1);
+  }
+  fclose(fu);
+}
+
 void init_namespace(void) {
     uid_t uid = getuid();
     gid_t gid = getgid();    
